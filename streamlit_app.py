@@ -152,12 +152,30 @@ avatar_path = "aki_avatar.png" if os.path.exists("aki_avatar.png") else "🌸"
 
 # Helper functions to resolve API keys from environment
 def resolve_gemini_key():
+    if "gemini_key_override" in st.session_state and st.session_state.gemini_key_override.strip():
+        return st.session_state.gemini_key_override.strip()
+    # Check streamlit secrets (used in Streamlit Cloud)
+    try:
+        if "GEMINI_API_KEY" in st.secrets:
+            return st.secrets["GEMINI_API_KEY"].strip()
+        if "GOOGLE_API_KEY" in st.secrets:
+            return st.secrets["GOOGLE_API_KEY"].strip()
+    except Exception:
+        pass
     key = os.getenv("GEMINI_API_KEY", "")
     if not key:
         key = os.getenv("GOOGLE_API_KEY", "")
     return key.strip() if key else ""
 
 def resolve_tavily_key():
+    if "tavily_key_override" in st.session_state and st.session_state.tavily_key_override.strip():
+        return st.session_state.tavily_key_override.strip()
+    # Check streamlit secrets (used in Streamlit Cloud)
+    try:
+        if "TAVILY_API_KEY" in st.secrets:
+            return st.secrets["TAVILY_API_KEY"].strip()
+    except Exception:
+        pass
     key = os.getenv("TAVILY_API_KEY", "")
     return key.strip() if key else ""
 
@@ -188,7 +206,70 @@ if os.path.exists("aki_avatar.png"):
 
 st.sidebar.markdown('<div style="margin-bottom: 1.5rem;"></div>', unsafe_allow_html=True)
 
-st.sidebar.markdown('<div style="margin-top: 2rem;"></div>', unsafe_allow_html=True)
+st.sidebar.markdown("### 🔑 API Authentication")
+
+# Get initial values from environment or secrets
+env_gemini = ""
+try:
+    if "GEMINI_API_KEY" in st.secrets:
+        env_gemini = st.secrets["GEMINI_API_KEY"]
+    elif "GOOGLE_API_KEY" in st.secrets:
+        env_gemini = st.secrets["GOOGLE_API_KEY"]
+except Exception:
+    pass
+
+if not env_gemini:
+    env_gemini = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
+env_gemini = env_gemini.strip() if env_gemini else ""
+
+env_tavily = ""
+try:
+    if "TAVILY_API_KEY" in st.secrets:
+        env_tavily = st.secrets["TAVILY_API_KEY"]
+except Exception:
+    pass
+
+if not env_tavily:
+    env_tavily = os.getenv("TAVILY_API_KEY", "")
+env_tavily = env_tavily.strip() if env_tavily else ""
+
+# Input fields
+gemini_input = st.sidebar.text_input(
+    "Gemini API Key",
+    type="password",
+    value=st.session_state.get("gemini_key_override", env_gemini),
+    help="Enter your Gemini API key (from Google AI Studio)"
+)
+st.session_state.gemini_key_override = gemini_input
+
+tavily_input = st.sidebar.text_input(
+    "Tavily API Key",
+    type="password",
+    value=st.session_state.get("tavily_key_override", env_tavily),
+    help="Enter your Tavily API key for web search"
+)
+st.session_state.tavily_key_override = tavily_input
+
+if not gemini_input.strip():
+    st.sidebar.warning("⚠️ Gemini API Key is missing. Enter a key above to activate Aki.")
+
+if st.sidebar.button("💾 Save Keys to .env", use_container_width=True):
+    try:
+        with open(dotenv_path, "w", encoding="utf-8") as f:
+            f.write(f"GEMINI_API_KEY = {gemini_input.strip()}\n")
+            f.write(f"TAVILY_API_KEY = {tavily_input.strip()}\n")
+        
+        # Keep environment variable updated in current process memory too
+        os.environ["GEMINI_API_KEY"] = gemini_input.strip()
+        os.environ["TAVILY_API_KEY"] = tavily_input.strip()
+        
+        st.toast("Keys saved to `.env`!", icon="✅")
+        time.sleep(0.5)
+        st.rerun()
+    except Exception as e:
+        st.sidebar.error(f"Error saving to `.env`: {e}")
+
+st.sidebar.markdown('<div style="margin-top: 1.5rem;"></div>', unsafe_allow_html=True)
 
 # Conversation reset
 if st.sidebar.button("🗑️ Clear Chat History", use_container_width=True):
@@ -224,17 +305,15 @@ def openchat(state: State):
     full_prompt = [sys_msg] + user_msg
     
     api_key = resolve_gemini_key()
+    if not api_key:
+        raise ValueError("Gemini API key is missing. Please configure it in the sidebar settings on the left.")
+        
     model_name = "gemini-2.5-flash"
     
-    if api_key:
-        client = ChatGoogleGenerativeAI(
-            model=model_name,
-            google_api_key=api_key
-        )
-    else:
-        client = ChatGoogleGenerativeAI(
-            model=model_name
-        )
+    client = ChatGoogleGenerativeAI(
+        model=model_name,
+        google_api_key=api_key
+    )
     
     llm_tool = client.bind_tools([web_search])
     response = llm_tool.invoke(full_prompt)

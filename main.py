@@ -31,6 +31,11 @@ class State(BaseModel):
 
 # Initialize Gemini Model
 api_key = resolve_gemini_key()
+if not api_key:
+    import sys
+    print("\n❌ Error: Gemini API key is missing! Please configure GEMINI_API_KEY in your .env file or environment.\n")
+    sys.exit(1)
+
 client = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=api_key
