@@ -1,6 +1,6 @@
 from dotenv import load_dotenv
 import os
-from langchain_openrouter import ChatOpenRouter
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import START, END, StateGraph
 from langgraph.graph.message import add_messages
 from langchain.tools import tool
@@ -15,23 +15,38 @@ from langgraph.checkpoint.memory import MemorySaver
 # Load environment variables
 load_dotenv(override=True)
 
-search = TavilySearch(max_results=3)
+# Helper functions to resolve API keys from environment or fallbacks
+def resolve_gemini_key():
+    key = os.getenv("GEMINI_API_KEY", "")
+    if not key:
+        key = os.getenv("GOOGLE_API_KEY", "")
+    if not key:
+        key = "AIzaSyBeAkIolDCEK_XX1LKaoj2F5UHeFeog6Qc"
+    return key.strip() if key else ""
+
+def resolve_tavily_key():
+    key = os.getenv("TAVILY_API_KEY", "")
+    if not key:
+        key = "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"
+    return key.strip() if key else ""
 
 class State(BaseModel):
     messages: Annotated[list[AnyMessage], add_messages]
 
-# Retrieve api key from environment variables
-api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("openai_api_key") or os.getenv("OPENAI_API_KEY")
-
-client = ChatOpenRouter(
-    model="gpt-5-nano",
-    base_url="https://openrouter.ai/api/v1",
-    api_key=api_key
+# Initialize Gemini Model
+api_key = resolve_gemini_key()
+client = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    google_api_key=api_key
 )
 
 @tool
 def web_search(query: str):
-    """a web search tool"""
+    """a web search tool to find information on the web about recent anime, manga, and news."""
+    tavily_key = resolve_tavily_key()
+    if tavily_key:
+        os.environ["TAVILY_API_KEY"] = tavily_key
+    search = TavilySearch(max_results=3)
     return search.invoke(query)
 
 llm_tool = client.bind_tools([web_search])

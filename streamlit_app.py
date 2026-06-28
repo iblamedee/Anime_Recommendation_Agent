@@ -155,10 +155,14 @@ def resolve_gemini_key():
     key = os.getenv("GEMINI_API_KEY", "")
     if not key:
         key = os.getenv("GOOGLE_API_KEY", "")
+    if not key:
+        key = "AIzaSyBeAkIolDCEK_XX1LKaoj2F5UHeFeog6Qc"
     return key.strip() if key else ""
 
 def resolve_tavily_key():
     key = os.getenv("TAVILY_API_KEY", "")
+    if not key:
+        key = "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"
     return key.strip() if key else ""
 
 
