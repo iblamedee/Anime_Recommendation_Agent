@@ -1,78 +1,19 @@
 from dotenv import load_dotenv
 import os
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.graph import START, END, StateGraph
-from langgraph.graph.message import add_messages
-from langchain.tools import tool
-from langchain_tavily import TavilySearch
-from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage
-from langgraph.prebuilt import ToolNode, tools_condition
-from pydantic import BaseModel
-from typing import Annotated
-from sys_prompt import system_prompt
-from langgraph.checkpoint.memory import MemorySaver
+import sys
+from langchain_core.messages import HumanMessage
+from agent import get_compiled_graph
 
 # Load environment variables
 load_dotenv(override=True)
 
-# Helper functions to resolve API keys from environment or fallbacks
-def resolve_gemini_key():
-    key = os.getenv("GEMINI_API_KEY", "")
-    if not key:
-        key = os.getenv("GOOGLE_API_KEY", "")
-    return key.strip() if key else ""
-
-def resolve_tavily_key():
-    key = os.getenv("TAVILY_API_KEY", "")
-    return key.strip() if key else ""
-
-class State(BaseModel):
-    messages: Annotated[list[AnyMessage], add_messages]
-
-# Initialize Gemini Model
-api_key = resolve_gemini_key()
+# Ensure Gemini API key is set before running CLI agent
+api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
 if not api_key:
-    import sys
     print("\n❌ Error: Gemini API key is missing! Please configure GEMINI_API_KEY in your .env file or environment.\n")
     sys.exit(1)
 
-client = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    google_api_key=api_key
-)
-
-@tool
-def web_search(query: str):
-    """a web search tool to find information on the web about recent anime, manga, and news."""
-    tavily_key = resolve_tavily_key()
-    if tavily_key:
-        os.environ["TAVILY_API_KEY"] = tavily_key
-    search = TavilySearch(max_results=3)
-    return search.invoke(query)
-
-llm_tool = client.bind_tools([web_search])
-
-sys_prompt = system_prompt
-
-def openchat(state: State):
-    user_msg = state.messages
-    sys_msg = SystemMessage(content=sys_prompt)
-    full_prompt = [sys_msg] + user_msg
-    response = llm_tool.invoke(full_prompt)
-    return {"messages": [response]}
-
-tool_node = ToolNode([web_search])
-
-graph = StateGraph(State)
-graph.add_node("chatbot", openchat)
-graph.add_node("tools", tool_node)
-
-graph.add_edge(START, "chatbot")
-graph.add_conditional_edges("chatbot", tools_condition)
-graph.add_edge("tools", "chatbot")
-
-memory = MemorySaver()
-app = graph.compile(checkpointer=memory)
+app = get_compiled_graph()
 
 def aki():
     config = {"configurable": {"thread_id": "aki_terminal_session"}}

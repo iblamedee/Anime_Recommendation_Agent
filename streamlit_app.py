@@ -3,16 +3,8 @@ import os
 import uuid
 import time
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.graph import START, END, StateGraph
-from langgraph.graph.message import add_messages
-from langchain.tools import tool
-from langchain_tavily import TavilySearch
 from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, AIMessage, ToolMessage
-from langgraph.prebuilt import ToolNode, tools_condition
-from pydantic import BaseModel
-from typing import Annotated
-from sys_prompt import system_prompt
+from agent import get_compiled_graph as compile_agent_graph
 
 # Load environment variables
 dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -136,6 +128,94 @@ div[data-testid="stChatInput"] {
     0% { filter: drop-shadow(0 0 2px rgba(236, 72, 153, 0.2)); }
     100% { filter: drop-shadow(0 0 8px rgba(168, 85, 247, 0.5)); }
 }
+
+/* Card wrapper styling */
+.ani-card {
+    display: flex;
+    flex-direction: row;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(236, 72, 153, 0.15);
+    border-radius: 12px;
+    padding: 12px;
+    margin: 12px 0;
+    gap: 16px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+.ani-card-poster {
+    width: 90px !important;
+    height: 130px !important;
+    object-fit: cover !important;
+    border-radius: 8px !important;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4) !important;
+    flex-shrink: 0 !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: block !important;
+}
+
+.ani-card-content {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.ani-card-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #ec4899;
+    margin: 0 0 4px 0;
+}
+
+.ani-card-meta {
+    font-size: 0.85rem;
+    color: #94a3b8;
+    margin-bottom: 6px;
+    line-height: 1.4;
+}
+
+.ani-card-hook {
+    font-size: 0.95rem;
+    font-style: italic;
+    color: #f1f5f9;
+    margin-bottom: 8px;
+    line-height: 1.4;
+}
+
+.ani-card-links {
+    font-size: 0.85rem;
+    margin-top: 4px;
+}
+
+.ani-card-link {
+    color: #ec4899 !important;
+    text-decoration: none !important;
+    font-weight: 600 !important;
+    padding: 3px 8px !important;
+    background: rgba(236, 72, 153, 0.1) !important;
+    border-radius: 6px !important;
+    transition: all 0.2s ease !important;
+    margin-right: 8px !important;
+    border: 1px solid rgba(236, 72, 153, 0.2) !important;
+    display: inline-block !important;
+}
+
+.ani-card-link:hover {
+    background: rgba(236, 72, 153, 0.2) !important;
+    border-color: rgba(236, 72, 153, 0.4) !important;
+    box-shadow: 0 0 8px rgba(236, 72, 153, 0.3) !important;
+}
+
+/* General fallback for any inline image inside Aki bubbles */
+.chat-bubble-aki img:not(.ani-card-poster) {
+    max-width: 90px !important;
+    max-height: 130px !important;
+    border-radius: 6px !important;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3) !important;
+    margin: 5px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -178,6 +258,14 @@ def resolve_tavily_key():
         pass
     key = os.getenv("TAVILY_API_KEY", "")
     return key.strip() if key else ""
+
+def sync_env_keys():
+    gemini_key = resolve_gemini_key()
+    tavily_key = resolve_tavily_key()
+    if gemini_key:
+        os.environ["GEMINI_API_KEY"] = gemini_key
+    if tavily_key:
+        os.environ["TAVILY_API_KEY"] = tavily_key
 
 
 def extract_text_content(content):
@@ -250,6 +338,9 @@ tavily_input = st.sidebar.text_input(
 )
 st.session_state.tavily_key_override = tavily_input
 
+# Sync the keys to os.environ so that the agent modules can access them
+sync_env_keys()
+
 if not gemini_input.strip():
     st.sidebar.warning("⚠️ Gemini API Key is missing. Enter a key above to activate Aki.")
 
@@ -279,65 +370,13 @@ if st.sidebar.button("🗑️ Clear Chat History", use_container_width=True):
     st.rerun()
 
 # ----------------------------------------------------
-# 4. LangGraph Agent Logic Definition
+# 4. LangGraph Agent Logic Integration
 # ----------------------------------------------------
-class State(BaseModel):
-    messages: Annotated[list[AnyMessage], add_messages]
-
-# Interactive tool definition
-@tool
-def web_search(query: str):
-    """a web search tool to find information on the web about recent anime, manga, studios, release dates, and pop culture."""
-    tavily_key = resolve_tavily_key()
-    if not tavily_key:
-        return "Error: Tavily Search API key is missing. Please configure it in the sidebar settings."
-    try:
-        os.environ["TAVILY_API_KEY"] = tavily_key
-        search = TavilySearch(max_results=3)
-        return search.invoke(query)
-    except Exception as e:
-        return f"Error executing web search tool: {str(e)}"
-
-# Chatbot node
-def openchat(state: State):
-    user_msg = state.messages
-    sys_msg = SystemMessage(content=system_prompt)
-    full_prompt = [sys_msg] + user_msg
-    
-    api_key = resolve_gemini_key()
-    if not api_key:
-        raise ValueError("Gemini API key is missing. Please configure it in the sidebar settings on the left.")
-        
-    model_name = "gemini-2.5-flash"
-    
-    client = ChatGoogleGenerativeAI(
-        model=model_name,
-        google_api_key=api_key
-    )
-    
-    llm_tool = client.bind_tools([web_search])
-    response = llm_tool.invoke(full_prompt)
-    return {"messages": [response]}
-
-# Compile LangGraph graph
 @st.cache_resource
-def get_compiled_graph():
-    tool_node = ToolNode([web_search])
-    
-    graph = StateGraph(State)
-    graph.add_node("chatbot", openchat)
-    graph.add_node("tools", tool_node)
-    
-    graph.add_edge(START, "chatbot")
-    graph.add_conditional_edges("chatbot", tools_condition)
-    graph.add_edge("tools", "chatbot")
-    
-    memory = MemorySaver = None # we'll instantiate MemorySaver here
-    from langgraph.checkpoint.memory import MemorySaver
-    memory = MemorySaver()
-    return graph.compile(checkpointer=memory)
+def get_cached_graph():
+    return compile_agent_graph()
 
-app = get_compiled_graph()
+app = get_cached_graph()
 
 
 # ----------------------------------------------------
@@ -345,6 +384,117 @@ app = get_compiled_graph()
 # ----------------------------------------------------
 st.markdown('<h1 class="header-container">🌸 Aki: Anime Companion</h1>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle-container">Your passionate, high-energy anime expert companion! Driven by LangGraph & Tavily Search.</p>', unsafe_allow_html=True)
+
+
+# ----------------------------------------------------
+# 5.5. Recommendation Card Parser Helpers
+# ----------------------------------------------------
+def parse_and_format_cards(text: str) -> str:
+    """Parses standard markdown recommendation cards and converts them into visual flexbox HTML cards."""
+    lines = text.split("\n")
+    output_lines = []
+    
+    in_card = False
+    card_lines = []
+    
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("🎌"):
+            # If we were already in a card, process and close it first
+            if in_card:
+                output_lines.append(_render_card_html(card_lines))
+                card_lines = []
+            in_card = True
+            card_lines.append(line)
+        elif in_card:
+            # Close card if we hit lists, block headers, or dividers
+            if stripped == "" or stripped.startswith("-") or stripped.startswith("1."):
+                output_lines.append(_render_card_html(card_lines))
+                card_lines = []
+                in_card = False
+                output_lines.append(line)
+            else:
+                card_lines.append(line)
+        else:
+            output_lines.append(line)
+            
+    # Process final card if still open
+    if in_card:
+        output_lines.append(_render_card_html(card_lines))
+        
+    return "\n".join(output_lines)
+
+def _render_card_html(lines: list[str]) -> str:
+    title = ""
+    image_url = ""
+    meta = ""
+    hook = ""
+    links = ""
+    
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("🎌"):
+            title = stripped.replace("🎌", "", 1).strip().replace("**", "")
+        elif stripped.startswith("![Poster]"):
+            # Extract URL from markdown format ![Poster](url)
+            start = stripped.find("(")
+            end = stripped.find(")")
+            if start != -1 and end != -1:
+                image_url = stripped[start+1:end].strip()
+        elif stripped.startswith("🎭"):
+            meta = stripped.replace("🎭", "", 1).strip().replace("**", "")
+        elif stripped.startswith("⚡"):
+            hook = stripped.replace("⚡", "", 1).strip().replace("**", "")
+        elif stripped.startswith("🔗"):
+            links = stripped.replace("🔗", "", 1).strip()
+            
+    # Format poster image column
+    img_html = ""
+    if image_url:
+        img_html = f'<img class="ani-card-poster" src="{image_url}" alt="Poster" />'
+        
+    # Convert markdown links or raw URLs in the link line to premium HTML badges
+    links_html = ""
+    if links:
+        import re
+        parts = links.split("|")
+        linkified_parts = []
+        for p in parts:
+            part_str = p.strip()
+            if not part_str:
+                continue
+                
+            # 1. Check for markdown link [label](url)
+            md_match = re.search(r"\[(.*?)\]\((.*?)\)", part_str)
+            if md_match:
+                label = md_match.group(1).strip()
+                url = md_match.group(2).strip()
+                prefix = part_str[:md_match.start()].strip().rstrip(":").strip()
+                link_text = f"{prefix}: {label}" if prefix else label
+                linkified_parts.append(f'<a href="{url}" target="_blank" class="ani-card-link">{link_text}</a>')
+                continue
+                
+            # 2. Check for raw HTTP/HTTPS URL
+            url_match = re.search(r"(https?://[^\s|]+)", part_str)
+            if url_match:
+                url = url_match.group(1).strip()
+                prefix = part_str[:url_match.start()].strip().rstrip(":").strip()
+                link_text = prefix if prefix else "Link"
+                linkified_parts.append(f'<a href="{url}" target="_blank" class="ani-card-link">{link_text}</a>')
+                continue
+                
+            # 3. Fallback to plain text if no link matches
+            linkified_parts.append(part_str)
+            
+        links_html = " ".join(linkified_parts)
+    
+    card_html = f'<div class="ani-card">{img_html}<div class="ani-card-content"><div class="ani-card-title">🎌 {title}</div><div class="ani-card-meta">🎭 {meta}</div>'
+    if hook:
+        card_html += f'<div class="ani-card-hook">⚡ {hook}</div>'
+    if links_html:
+        card_html += f'<div class="ani-card-links">🔗 {links_html}</div>'
+    card_html += '</div></div>'
+    return card_html
 
 
 # ----------------------------------------------------
@@ -399,7 +549,8 @@ def render_past_messages():
                 if msg.content:
                     content_text = extract_text_content(msg.content)
                     if content_text:
-                        st.markdown(f'<div class="chat-bubble-aki">{content_text}</div>', unsafe_allow_html=True)
+                        formatted_text = parse_and_format_cards(content_text)
+                        st.markdown(f'<div class="chat-bubble-aki">{formatted_text}</div>', unsafe_allow_html=True)
             
             idx = next_idx
 
@@ -488,8 +639,13 @@ if user_input:
             typed_text = ""
             for char in final_answer:
                 typed_text += char
+                # During typing, render normally inside the bubble
                 response_placeholder.markdown(f'<div class="chat-bubble-aki">{typed_text}</div>', unsafe_allow_html=True)
                 time.sleep(0.003)
+            
+            # Once typing is complete, convert standard text to custom premium cards
+            formatted_answer = parse_and_format_cards(final_answer)
+            response_placeholder.markdown(f'<div class="chat-bubble-aki">{formatted_answer}</div>', unsafe_allow_html=True)
             
             # Make sure the UI updates completely
             st.rerun()
